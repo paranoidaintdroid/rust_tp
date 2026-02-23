@@ -1,7 +1,5 @@
-use std::{
-    sync::{Arc, Mutex, mpsc, mpsc::Receiver},
-    thread,
-};
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use std::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -29,20 +27,12 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<Receiver<Job>>>) -> Worker {
+    fn new(id: usize, receiver: Receiver<Job>) -> Worker {
         let thread = thread::spawn(move || {
             loop {
-                let message = match receiver.lock() {
-                    Ok(lock) => lock.recv(),
-                    Err(_) => {
-                        println!("Worker {} mutex poisoned; shutting down.", id);
-                        break;
-                    }
-                };
-
-                match message {
+                match receiver.recv() {
                     Ok(job) => {
-                        println!("Worker {} got a job; executing.", id);
+                        //println!("Worker {} got a job; executing.", id);
                         job();
                     }
                     Err(_) => {
@@ -82,7 +72,7 @@ impl Worker {
 /// ```
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: Option<mpsc::Sender<Job>>,
+    sender: Option<Sender<Job>>,
 }
 
 impl ThreadPool {
@@ -108,13 +98,12 @@ impl ThreadPool {
             return Err(PoolError::ZeroWorkers);
         }
 
-        let (sender, receiver) = mpsc::channel::<Job>();
-        let receiver = Arc::new(Mutex::new(receiver));
+        let (sender, receiver) = unbounded::<Job>();
 
         let mut workers = Vec::with_capacity(size);
 
         for id in 0..size {
-            workers.push(Worker::new(id, Arc::clone(&receiver)));
+            workers.push(Worker::new(id, receiver.clone()));
         }
 
         Ok(ThreadPool {
@@ -147,13 +136,12 @@ impl ThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        let job: Job = Box::new(f);
+        let job = Box::new(f);
 
-        let sender = self.sender.as_ref().ok_or(PoolError::SendError)?;
-
-        sender.send(job).map_err(|_| PoolError::SendError)?;
-
-        Ok(())
+        match &self.sender {
+            Some(sender) => sender.send(job).map_err(|_| PoolError::SendError),
+            None => Err(PoolError::SendError),
+        }
     }
 }
 
@@ -171,17 +159,20 @@ impl Drop for ThreadPool {
     }
 }
 
+// TESTS
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossbeam_channel::unbounded;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::Arc;
     use std::thread;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn test_mpsc_basics() {
-        let (tx, rx) = mpsc::channel::<String>();
+    fn test_channel_basics() {
+        let (tx, rx) = unbounded::<String>();
 
         let tx1 = tx.clone();
         let tx2 = tx.clone();
@@ -196,7 +187,7 @@ mod tests {
 
         drop(tx);
 
-        for received in rx {
+        for received in rx.iter() {
             println!("{}", received);
         }
 
@@ -205,38 +196,21 @@ mod tests {
     }
 
     #[test]
-    fn test_arc_mutex_receiver() {
-        let (tx, rx) = mpsc::channel::<String>();
-        let shared = Arc::new(Mutex::new(rx));
+    fn test_multiple_receivers_without_mutex() {
+        let (tx, rx) = unbounded::<String>();
 
-        let s1 = Arc::clone(&shared);
-        let s2 = Arc::clone(&shared);
+        let rx1 = rx.clone();
+        let rx2 = rx.clone();
 
         let handle1 = thread::spawn(move || {
-            loop {
-                let message = {
-                    let lock = s1.lock().unwrap();
-                    lock.recv()
-                };
-
-                match message {
-                    Ok(msg) => println!("Worker 1 received: {}", msg),
-                    Err(_) => break,
-                }
+            while let Ok(msg) = rx1.recv() {
+                println!("Worker 1 received: {}", msg);
             }
         });
 
         let handle2 = thread::spawn(move || {
-            loop {
-                let message = {
-                    let lock = s2.lock().unwrap();
-                    lock.recv()
-                };
-
-                match message {
-                    Ok(msg) => println!("Worker 2 received: {}", msg),
-                    Err(_) => break,
-                }
+            while let Ok(msg) = rx2.recv() {
+                println!("Worker 2 received: {}", msg);
             }
         });
 
@@ -253,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_closure_as_job() {
-        let (tx, rx) = mpsc::channel::<Job>();
+        let (tx, rx) = unbounded::<Job>();
 
         let msg = String::from("Dummy String");
 
@@ -278,6 +252,8 @@ mod tests {
             })
             .unwrap();
         }
+
+        drop(pool);
     }
 
     #[test]
@@ -304,6 +280,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(counter.load(Ordering::SeqCst), 4);
+
         assert!(
             elapsed < Duration::from_millis(400),
             "Jobs did not run concurrently. Elapsed: {:?}",
