@@ -20,11 +20,13 @@ impl NaivePool {
 
         for _ in 0..size {
             let rx = Arc::clone(&receiver);
-            workers.push(thread::spawn(move || loop {
-                let msg = rx.lock().unwrap().recv().unwrap();
-                match msg {
-                    Some(job) => job(),
-                    None => break,
+            workers.push(thread::spawn(move || {
+                loop {
+                    let msg = rx.lock().unwrap().recv().unwrap();
+                    match msg {
+                        Some(job) => job(),
+                        None => break,
+                    }
                 }
             }));
         }
@@ -192,7 +194,17 @@ fn bench_burst_beast(c: &mut Criterion) {
     });
 }
 
-criterion_group!(trivial, bench_trivial_spawn, bench_trivial_naive, bench_trivial_beast);
+criterion_group!(
+    trivial,
+    bench_trivial_spawn,
+    bench_trivial_naive,
+    bench_trivial_beast
+);
 criterion_group!(cpu_bound, bench_cpu_spawn, bench_cpu_naive, bench_cpu_beast);
-criterion_group!(burst, bench_burst_spawn, bench_burst_naive, bench_burst_beast);
+criterion_group!(
+    burst,
+    bench_burst_spawn,
+    bench_burst_naive,
+    bench_burst_beast
+);
 criterion_main!(trivial, cpu_bound, burst);

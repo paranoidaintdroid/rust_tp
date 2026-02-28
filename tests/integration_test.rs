@@ -1,6 +1,6 @@
+use crossbeam_channel::unbounded;
 use rust_tp::PoolError;
 use rust_tp::ThreadPool;
-use crossbeam_channel::unbounded;
 use std::time::Instant;
 
 #[test]

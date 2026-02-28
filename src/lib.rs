@@ -1,11 +1,59 @@
+/// `core_affinity` is an external crate that helps us discover the logical CPU cores
+/// available on the machine and pin individual threads to specific cores. (Thread 1
+/// should work with core 1 only)
+///
+/// Why? By default, the OS scheduler is free to migrate a thread
+/// from core 0 to core 3 at any moment.
+/// Pinning worker N permanently to core N keeps its cache hot.
 use core_affinity;
+
+/// `crossbeam_deque` provides the three-part work-stealing data structure, on which our
+/// Thread Pool Exceutor's performance depends
+///
+/// - `Injector<T>` is the global entry point. Any thread can push jobs onto it.
+///   It is a lock-free multi-producer queue.
+///
+/// - `Steal<T>` is the return type of every steal attempt. It is a three-variant enum:
+///   `Success(job)` means you got a job, `Empty` means the queue had nothing,
+///   and `Retry` means you collided and must try again.
+///
+/// - `Worker<T>` (aliased here as `LocalWorker` to avoid clashing with our own
+///   `Worker` struct below) is the thread-local end of a work-stealing deque.
+///   Only the owning thread pushes and pops from it. Other threads steal from
+///   the opposite end via `Stealer<T>` handles.
 use crossbeam_deque::{Injector, Steal, Worker as LocalWorker};
+
+/// `std::hint` gives/hints low-level suggestions to the compiler and CPU about
+/// the intent of our code.
 use std::hint;
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc,
-};
+
+/// `std::sync` is the standard library's module that allow multiple threads to
+/// safely coordinate access to shared state.
+///  
+/// From it we pull three things:
+///
+/// `AtomicBool` — a boolean whose load and store operations are guaranteed to be
+/// indivisible even under concurrent access from many threads.
+///
+/// `AtomicUsize` — an unsigned integer of pointer size with the same atomicity
+/// guarantee.
+///
+/// `Ordering` — the enum that controls how much synchronization each atomic
+/// operation performs.
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// `Arc<T>` — Atomically Reference Counted is a heap-allocated smart pointer
+/// that allows *multiple owners* of the same data.
+/// `Arc::clone(&x)`, helps you *atomically increment a reference count*.
+/// When the last `Arc`dropped, the reference count hits zero and the value is freed.
+use std::sync::Arc;
+
+/// `std::thread` is the module for spawning and managing OS threads.
 use std::thread;
+
+/// `std::thread::Thread` — note the capital T? is a *handle* to a specific OS
+/// thread that is already running. It is different from `JoinHandle`, which represents
+/// ownership of a thread and is consumed by `.join()`.
 use std::thread::Thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
