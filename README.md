@@ -1,18 +1,18 @@
 # rust_tp — Work-Stealing Thread Pool
 
 A thread pool executor that started naive (Mutex + mpsc) and got fast.
-The key upgrade? Replaced the single shared queue with `crossbeam_deque`'s work-stealing architecture — each worker now has its own local job queue, and only reaches for a neighbour's queue when its own runs dry.
+What did I do? Replaced the single shared queue with `crossbeam_deque`'s work-stealing architecture, each worker now has its own local job queue, and only reaches for a neighbour's queue when its own runs dry.
 
 ---
 
 ## What's inside
 
 - **Lock-free job submission** via `crossbeam_deque`'s `Injector`
-- **Work-stealing** — idle workers steal from busy workers' local queues
-- **Core pinning** via `core_affinity` — worker N stays on core N, cache stays hot
-- **Spin-then-park backoff** — spins 200 times (emitting a CPU PAUSE hint), then parks the OS thread at zero CPU cost
-- **False-sharing prevention** — per-worker counters are `#[repr(align(64))]` padded to their own cache lines
-- **Clean shutdown** — dropping the pool blocks until every submitted job finishes
+- **Work-stealing** - idle workers steal from busy workers' local queues
+- **Core pinning** via `core_affinity` - worker N stays on core N, cache stays hot
+- **Spin-then-park backoff** - spins 200 times (emitting a CPU PAUSE hint), then parks the OS thread at zero CPU cost
+- **False-sharing prevention** - per-worker counters are `#[repr(align(64))]` padded to their own cache lines
+- **Clean shutdown** - dropping the pool blocks until every submitted job finishes
 
 ---
 
@@ -80,7 +80,7 @@ STEP 4: Nothing found?
 
 ## Why not a single shared Mutex\<Queue\>?
 
-The naive approach — every worker fights over one `Mutex<Receiver>` — turns the queue into a bottleneck. Under load, workers spend more time waiting for the lock than doing actual work. Work-stealing flips this: each worker owns its queue, contention only happens when a worker is idle and reaching out to steal. The hot path (your own local queue) has zero contention.
+The naive approach : every worker fights over one `Mutex<Receiver>` — turns the queue into a bottleneck. Under load, workers spend more time waiting for the lock than doing actual work. Work-stealing flips this: each worker owns its queue, contention only happens when a worker is idle and reaching out to steal. The hot path (your own local queue) has zero contention.
 
 ---
 
@@ -90,9 +90,9 @@ Three groups, each comparing `thread::spawn` vs the naive `Mutex+mpsc` pool vs t
 
 | Group | What it measures |
 |---|---|
-| `A_trivial` | Raw scheduling overhead — single no-op job |
-| `B_cpu_bound` | Throughput under real load — single CPU-heavy job |
-| `C_burst` | Queue throughput — 1,000 jobs submitted at once |
+| `A_trivial` | Raw scheduling overhead - single no-op job |
+| `B_cpu_bound` | Throughput under real load - single CPU-heavy job |
+| `C_burst` | Queue throughput - 1,000 jobs submitted at once |
 
 ```bash
 cargo bench
