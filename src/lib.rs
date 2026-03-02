@@ -1,3 +1,5 @@
+use std::panic::{self, AssertUnwindSafe};
+
 // `core_affinity` is an external crate that helps us discover the logical CPU cores
 // available on the machine and pin individual threads to specific cores. (Thread 1
 // should work with core 1 only)
@@ -325,22 +327,34 @@ impl ThreadPool {
 
                 loop {
                     if let Some(job) = find_task() {
-                        // This is the actual execution of the user's closure.
-                        // Whatever the user submitted via execute, a computation, a network call, a file write
-                        // happens right here on this line.
-                        job();
-                        //incrementing the task count
+                        let result = panic::catch_unwind(AssertUnwindSafe(|| job()));
+                        if let Err(e) = result {
+                            eprintln!("Worker {id}: job panicked: {:?}", e);
+                        }
                         state_clone.task_count.fetch_add(1, Ordering::Relaxed);
-                        // Spin is zero, since our worker is active
                         spins = 0;
                     } else {
-                        // Check if our ThreadPool is shutting down (since no Job)
                         if shutdown_clone.load(Ordering::Acquire) {
+                            // drain remaining injector jobs before exiting so nothing is lost
+                            loop {
+                                match injector_clone.steal() {
+                                    Steal::Success(job) => {
+                                        let result =
+                                            panic::catch_unwind(AssertUnwindSafe(|| job()));
+                                        if let Err(e) = result {
+                                            eprintln!(
+                                                "Worker {id}: job panicked during drain: {:?}",
+                                                e
+                                            );
+                                        }
+                                        state_clone.task_count.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    Steal::Empty => break,
+                                    Steal::Retry => continue,
+                                }
+                            }
                             break;
                         }
-
-                        // keep worker active and Core warm, until 200 spins are done
-                        // after that park the thread and reset spin counter
                         if spins < MAX_SPINS {
                             hint::spin_loop();
                             spins += 1;
@@ -416,7 +430,6 @@ impl ThreadPool {
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-
         // set the shutdown flag
         self.shutdown.store(true, Ordering::Release);
 
@@ -437,7 +450,12 @@ impl Drop for ThreadPool {
         //Join all Workers
         for worker in &mut self.workers {
             if let Some(thread) = worker.thread.take() {
-                thread.join().unwrap();
+                match thread.join() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Worker {} panicked: {:?}", worker.id, e);
+                    }
+                }
             }
         }
     }
