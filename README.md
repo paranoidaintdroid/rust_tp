@@ -86,13 +86,68 @@ The naive approach : every worker fights over one `Mutex<Receiver>` — turns th
 
 ## Benchmarks
 
-Three groups, each comparing `thread::spawn` vs the naive `Mutex+mpsc` pool vs this work-stealing pool:
+Three groups, each comparing `thread::spawn` vs the naive `Mutex+mpsc` pool vs this work-stealing pool.
+
+**Test machine:** AMD Ryzen 5 7530U @ 2.00 GHz · 16 GB RAM · Windows 11 x64
 
 | Group | What it measures |
 |---|---|
-| `A_trivial` | Raw scheduling overhead - single no-op job |
-| `B_cpu_bound` | Throughput under real load - single CPU-heavy job |
-| `C_burst` | Queue throughput - 1,000 jobs submitted at once |
+| `A_trivial` | Raw scheduling overhead — single no-op job |
+| `B_cpu_bound` | Throughput under real load — single CPU-heavy job |
+| `C_burst` | Queue throughput — 1,000 jobs submitted at once |
+
+### Results
+
+#### A — Trivial (single no-op job)
+
+| Executor | Median latency | vs. work-stealing |
+|---|---|---|
+| `thread::spawn` | 301.19 µs | ~127× slower |
+| Naive pool (Mutex+mpsc) | 28.50 µs | ~12× slower |
+| **Our Thread pool (work-stealing)** | **2.38 µs** | — |
+
+Spawning a raw OS thread takes ~300 µs on this machine. The naive pool cuts that to ~28 µs by reusing threads, but the Mutex still hurts. Work-stealing drops to **2.4 µs** — essentially free once the pool is warm.
+
+#### B — CPU-bound (single heavy job, 10 000-iteration fold)
+
+| Executor | Median latency | vs. work-stealing |
+|---|---|---|
+| `thread::spawn` | 226.02 µs | ~100× slower |
+| Naive pool (Mutex+mpsc) | 29.50 µs | ~13× slower |
+| **Our Thread pool (work-stealing)** | **2.25 µs** | — |
+
+Dispatch overhead stays flat at ~2.25 µs regardless of job weight — the pool is not the bottleneck.
+
+Worker task distribution across the B_cpu_bound run:
+```
+Worker 0: 1 125 860 tasks
+Worker 1: 1 188 113 tasks
+Worker 2:   965 412 tasks
+Worker 3: 1 034 716 tasks
+```
+Reasonably balanced; no single worker is starved.
+
+#### C — Burst (1 000 jobs submitted at once)
+
+| Executor | Median time | vs. work-stealing |
+|---|---|---|
+| `thread::spawn` | 111.42 ms | ~220× slower |
+| Naive pool (Mutex+mpsc) | 459.01 µs | ~0.9× (slightly faster) |
+| **Our Thread pool (work-stealing)** | **507.16 µs** | — |
+
+`thread::spawn` is catastrophically slow here — spawning 1 000 OS threads costs ~111 ms. Both pools process the burst in under a millisecond.
+
+The work-stealing pool is marginally slower (~10%) than naive in the burst case. This is expected: with 1 000 tiny no-op jobs, the cost of each job is dominated by the channel round-trip used to measure completion, not actual CPU work. The injector/steal path adds a small constant overhead that only shows when per-job work approaches zero. Under any real workload (see groups A and B) the work-stealing pool wins decisively.
+
+Worker task distribution across the C_burst run:
+```
+Worker 0: 4 592 996 tasks
+Worker 1: 5 262 133 tasks
+Worker 2: 3 997 655 tasks
+Worker 3: 4 438 216 tasks
+```
+
+### Running the benchmarks yourself
 
 ```bash
 cargo bench
